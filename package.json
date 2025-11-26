@@ -1,10 +1,11 @@
 {
-  "name": "@mertdeveci55/univer-import-export",
-  "version": "0.1.51",
+  "name": "@chang-code-hub/univer-import-export",
+  "version": "0.1.42",
   "description": "Excel/CSV import and export library for Univer spreadsheets with full format preservation",
   "private": false,
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "main": "dist/luckyexcel.cjs.js",
   "module": "dist/luckyexcel.esm.js",
@@ -46,14 +47,14 @@
     "xlsx",
     "xls"
   ],
-  "author": "mertdeveci",
-  "homepage": "https://github.com/mertdeveci/univerjs-import-export",
+  "author": "mertdeveci chang",
+  "homepage": "https://github.com/chang-code-hub/univerjs-import-export",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mertdeveci/univerjs-import-export.git"
+    "url": "git+https://github.com/chang-code-hub/univerjs-import-export.git"
   },
   "bugs": {
-    "url": "https://github.com/mertdeveci/univerjs-import-export/issues"
+    "url": "https://github.com/chang-code-hub/univerjs-import-export/issues"
   },
   "license": "MIT",
   "devDependencies": {
@@ -89,8 +90,7 @@
     "typescript": "~5.3.3",
     "vinyl-buffer": "^1.0.1",
     "vinyl-source-stream": "^2.0.0",
-    "watchify": "^3.11.1",
-    "xlsx": "^0.18.5"
+    "watchify": "^3.11.1"
   },
   "dependencies": {
     "@progress/jszip-esm": "^1.0.4",
@@ -100,6 +100,7 @@
     "dayjs": "^1.11.13",
     "nanoid": "^3.3.11",
     "papaparse": "^5.5.3",
+    "xlsx": "^0.18.5",
     "xml2js": "^0.6.2"
   },
   "config": {
