@@ -1,11 +1,16 @@
-Оригинал: @zwight/Luckyexcel
-Отслеживание: @mertdeveci55/univer-import-export,
-              @chang-code-hub/luckyexcel-fixed
-Цель актуальный репозиторий.
-Рабоспособность: в разработке, код не проверен.
+# Оригинал: @zwight/Luckyexcel
 
+# Отслеживание: 
+@mertdeveci55/univer-import-export,
+@chang-code-hub/luckyexcel-fixed
 
-# @mertdeveci55/univer-import-export
+# Цель: актуальный репозиторий.
+
+# Состояние: в разработке, код не проверен.
+ 
+
+## ----------------------------------------------- ##
+
 
 A robust Excel/CSV import and export library for [Univer](https://github.com/dream-num/univer) spreadsheets with full format preservation, including formulas, styling, charts, and conditional formatting.
 
