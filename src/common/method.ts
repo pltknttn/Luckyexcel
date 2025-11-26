@@ -629,17 +629,28 @@ export class fromulaRef {
             let $row = freezonFuc[0] ? "$" : "",
                 $col = freezonFuc[1] ? "$" : "";
             
-            if (orient == "u" && !freezonFuc[0]) {
-                row -= step;
+            // CRITICAL BUG FIX: The conditions were wrong!
+            // When moving right/left, we should ONLY change col if column is not frozen
+            // When moving up/down, we should ONLY change row if row is not frozen
+            if (orient == "u") {
+                if (!freezonFuc[0]) {  // Only change row if row is not absolute
+                    row -= step;
+                }
             } 
-            else if (orient == "r" && !freezonFuc[1]) {
-                col += step;
+            else if (orient == "d") {
+                if (!freezonFuc[0]) {  // Only change row if row is not absolute
+                    row += step;
+                }
+            }
+            else if (orient == "r") {
+                if (!freezonFuc[1]) {  // Only change col if column is not absolute
+                    col += step;
+                }
             } 
-            else if (orient == "l" && !freezonFuc[1]) {
-                col -= step;
-            } 
-            else if (!freezonFuc[0]) {
-                row += step;
+            else if (orient == "l") {
+                if (!freezonFuc[1]) {  // Only change col if column is not absolute
+                    col -= step;
+                }
             }
 
             if(row < 0 || col < 0){
@@ -1157,20 +1168,27 @@ export function getMultiFormulaValue(value: string): string[] {
 
 
 export function isfreezonFuc(txt:string) {
-    let row = txt.replace(/[^0-9]/g, "");
-    let col = txt.replace(/[^A-Za-z]/g, "");
-    let row$ = txt.substr(txt.indexOf(row) - 1, 1);
-    let col$ = txt.substr(txt.indexOf(col) - 1, 1);
-    let ret = [false, false];
-
-    if (row$ == "$") {
-        ret[0] = true;
+    // Parse cell reference to detect absolute references
+    // Format can be: $E$16, $E16, E$16, or E16
+    
+    const originalTxt = txt;
+    
+    // Remove sheet prefix if present (e.g., "Sheet1!$E$16" -> "$E$16")
+    if (txt.indexOf("!") > -1) {
+        txt = txt.split("!")[1];
     }
-    if (col$ == "$") {
-        ret[1] = true;
+    
+    // Match the cell reference pattern
+    const match = txt.match(/^(\$?)([A-Za-z]+)(\$?)(\d+)$/);
+    if (!match) {
+        return [false, false]; // Not a valid cell reference
     }
-
-    return ret;
+    
+    const colHasDollar = match[1] === "$";  // $ before column letter
+    const rowHasDollar = match[3] === "$";  // $ before row number
+    
+    // Return [rowIsAbsolute, columnIsAbsolute]
+    return [rowHasDollar, colHasDollar];
 }
 export function ABCToNumber(a: string) {
     if (a == null || a.length === 0) {

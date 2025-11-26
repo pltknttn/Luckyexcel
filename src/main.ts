@@ -2,10 +2,13 @@ import { LuckyFile } from "./ToLuckySheet/LuckyFile";
 // import {SecurityDoor,Car} from './content';
 
 import { HandleZip } from './HandleZip';
+import { HandleXls } from './HandleXls';
+import { debug } from './utils/debug';
 
 import { IuploadfileList } from "./ICommon";
 
 import { WorkBook } from "./UniverToExcel/Workbook";
+import { exportUniverToExcel } from "./UniverToExcel/index";
 import exceljs from "@zwight/exceljs";
 import { CSV } from "./UniverToCsv/CSV";
 import { isObject } from "./common/method";
@@ -42,7 +45,7 @@ export class LuckyExcel {
                 if (errorHandler) {
                     errorHandler(err);
                 } else {
-                    console.error(err);
+                    debug.error(err);
                 }
             });
     }
@@ -65,37 +68,96 @@ export class LuckyExcel {
                 if (errorHandler) {
                     errorHandler(err);
                 } else {
-                    console.error(err);
+                    debug.error(err);
                 }
             });
     }
 
 
-    static transformExcelToUniver(
+    static async transformExcelToUniver(
         excelFile: File,
         callback?: (files: IWorkbookData, fs?: string) => void,
         errorHandler?: (err: Error) => void
     ) {
-        let handleZip: HandleZip = new HandleZip(excelFile);
+        const startTime = Date.now();
+        
+        // Return a Promise that resolves when the callback is called
+        return new Promise<void>((resolveMain, rejectMain) => {
+            try {
+                // Handle both XLS and XLSX files
+                const processExcelFiles = async (files: IuploadfileList) => {
+                    try {
+                        let luckyFile = new LuckyFile(files, excelFile.name);
+                        let luckysheetfile = luckyFile.Parse();
+                        let exportJson = JSON.parse(luckysheetfile);
+                        
+                        if (callback != undefined) {
+                            console.log('[PACKAGE] About to create UniverWorkBook...');
+                            const univerData = new UniverWorkBook(exportJson);
+                            console.log('[PACKAGE] UniverWorkBook created successfully');
+                            callback(univerData.mode, luckysheetfile);
+                            console.log('[PACKAGE] Callback invoked successfully');
+                        }
+                        resolveMain();
+                    } catch (err) {
+                        debug.error('❌ [PACKAGE] Process error:', err);
+                        if (errorHandler) {
+                            errorHandler(err as Error);
+                        }
+                        rejectMain(err);
+                    }
+                };
 
-        handleZip.unzipFile(function (files: IuploadfileList) {
-            console.log('input------>', files);
-            let luckyFile = new LuckyFile(files, excelFile.name);
-            let luckysheetfile = luckyFile.Parse();
-            let exportJson = JSON.parse(luckysheetfile);
-            console.log('output---->', exportJson, files)
-            if (callback != undefined) {
-                const univerData = new UniverWorkBook(exportJson)
-                callback(univerData.mode, luckysheetfile);
-            }
-        },
-            function (err: Error) {
-                if (errorHandler) {
-                    errorHandler(err);
+                // Check if it's an XLS file
+                if (HandleXls.isXlsFile(excelFile)) {
+                    HandleXls.convertXlsToXlsx(excelFile)
+                        .then(files => {
+                            return processExcelFiles(files);
+                        })
+                        .catch(err => {
+                            debug.error('❌ [PACKAGE] XLS conversion error:', err);
+                            if (errorHandler) {
+                                errorHandler(err);
+                            }
+                            rejectMain(err);
+                        });
                 } else {
-                    console.error(err);
+                    // Handle XLSX file normally
+                    let handleZip: HandleZip = new HandleZip(excelFile);
+                    handleZip.unzipFile(
+                        (files: IuploadfileList) => {
+                            processExcelFiles(files).catch(err => {
+                                debug.error('❌ [PACKAGE] Processing error:', err);
+                                if (errorHandler) {
+                                    errorHandler(err);
+                                }
+                                rejectMain(err);
+                            });
+                        },
+                        function (err: Error) {
+                            debug.error('❌ [PACKAGE] Unzip error:', {
+                                error: err.message,
+                                elapsed: `${Date.now() - startTime}ms`
+                            });
+                            if (errorHandler) {
+                                errorHandler(err);
+                            }
+                            rejectMain(err);
+                        }
+                    );
                 }
-            });
+            } catch (err) {
+                debug.error('❌ [PACKAGE] Transform error:', {
+                    error: err instanceof Error ? err.message : String(err),
+                    stack: err instanceof Error ? err.stack : undefined,
+                    elapsed: `${Date.now() - startTime}ms`
+                });
+                if (errorHandler) {
+                    errorHandler(err as Error);
+                }
+                rejectMain(err);
+            }
+        });
     }
 
     static transformCsvToUniver(
@@ -123,12 +185,8 @@ export class LuckyExcel {
     }) {
         const { snapshot, fileName = `excel_${(new Date).getTime()}.xlsx`, getBuffer = false, success, error } = params;
         try {
-            // console.log(1, new Date())
-            const workbook = new WorkBook(snapshot);
-            // console.log(snapshot, workbook)
-            // console.log(2, new Date())
-            const buffer = await workbook.xlsx.writeBuffer();
-            // console.log(3, new Date())
+            // Use enhanced export for better feature support
+            const buffer = await exportUniverToExcel(snapshot);
             if (getBuffer) {
                 success?.(buffer);
             } else {
@@ -152,7 +210,6 @@ export class LuckyExcel {
         const { snapshot, fileName = `csv_${(new Date).getTime()}.csv`, getBuffer = false, success, error, sheetName } = params;
         try {
             const csv = new CSV(snapshot);
-            console.log(csv);
 
             let contents: string | { [key: string]: string };
             if (sheetName) {

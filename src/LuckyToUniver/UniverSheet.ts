@@ -1,17 +1,15 @@
 import {
-    BooleanNumber,
     ICellData,
     IRange,
     IObjectMatrixPrimitiveType,
     IObjectArrayPrimitiveType,
     IRowData,
     IColumnData,
-    CellValueType,
     Nullable,
     IDocumentData,
-    PositionedObjectLayoutType,
-    DrawingTypeEnum,
 } from '@univerjs/core';
+import { BooleanNumber, CellValueType, PositionedObjectLayoutType, DrawingTypeEnum } from '../common/univerEnums';
+import { debug } from '../utils/debug';
 import { UniverSheetBase } from './UniverSheetBase';
 import { handleStyle, removeEmptyAttr } from './utils';
 import { str2num, generateRandomId } from '../common/method';
@@ -24,12 +22,23 @@ export interface HyperLink {
     row: number;
     column: number;
 }
+
+export interface ArrayFormula {
+    formula: string;
+    range: {startRow: number, endRow: number, startCol: number, endCol: number};
+    masterRow: number;
+    masterCol: number;
+    formulaId: string;
+}
+
 export interface UniverSheetMode extends UniverSheetBase {
     hyperLink: HyperLink[];
+    arrayFormulas: ArrayFormula[];
     mode: UniverSheetMode;
 }
 export class UniverSheet extends UniverSheetBase {
     hyperLink: HyperLink[] = [];
+    arrayFormulas: ArrayFormula[] = [];
     constructor(sheetData: IluckySheet) {
         super();
         const {
@@ -55,13 +64,12 @@ export class UniverSheet extends UniverSheetBase {
 
             if (config.merge) this.mergeData = this.handleMerge(config);
 
-            if (celldata?.length) {
-                const { cellData, rowCount, colCount } = this.handleCellData(celldata, config);
-                this.cellData = cellData;
-                this.rowCount = this.rowCount > rowCount ? this.rowCount : rowCount + 1;
-                this.columnCount = this.columnCount > colCount ? this.columnCount : colCount + 1;
-            }
-            console.log(this.rowCount, this.columnCount)
+            // Always process sheet data, even if celldata is empty to preserve empty sheets
+            const { cellData, rowCount, colCount } = this.handleCellData(celldata || [], config);
+            this.cellData = cellData;
+            this.rowCount = this.rowCount > rowCount ? this.rowCount : rowCount + 1;
+            this.columnCount = this.columnCount > colCount ? this.columnCount : colCount + 1;
+            debug.log(this.rowCount, this.columnCount)
             this.handleRowAndColumnData(config);
             if (sheetData.freezen) this.handleFreeze(sheetData.freezen);
         }
@@ -91,6 +99,7 @@ export class UniverSheet extends UniverSheetBase {
             rightToLeft: this.rightToLeft,
             selections: this.selections,
             hyperLink: this.hyperLink,
+            arrayFormulas: this.arrayFormulas,
         };
     }
     private handleMerge = (config: IluckySheetConfig): IRange[] => {
@@ -106,6 +115,9 @@ export class UniverSheet extends UniverSheetBase {
         });
     };
     private handleCellData = (celldata: IluckySheetCelldata[], config: IluckySheetConfig) => {
+        // Track TRANSPOSE formulas to detect duplicates (for fixing import issues)
+        const transposeTracker = new Map<string, {firstRow: number, firstCol: number}>();
+        
         const handleCell = (row: IluckySheetCelldata): ICellData => {
             const { v } = row;
             if (typeof v === 'string' || v === null || v === undefined) {
@@ -128,27 +140,112 @@ export class UniverSheet extends UniverSheetBase {
 
             if (Number.isNaN(Number(val)) && cellType === CellValueType.NUMBER)
                 cellType = CellValueType.STRING;
-            if (this.hyperLink.findIndex((d) => d.column === row.c && d.row === row.r) > -1)
+            // Check if cell has hyperlink
+            const hyperlinkInfo = this.hyperLink.find((d) => d.column === row.c && d.row === row.r);
+            if (hyperlinkInfo) {
                 cellType = CellValueType.STRING;
+            }
 
+            // Handle formulas - preserve formula and calculated value
             const f = v.f?.replace(/=_xlfn./g, '=');
+            
+            // Handle array formulas using Univer's shared formula system (si)
+            let formulaId = null;
+            
+            // Check if this is a TRANSPOSE formula (always treat as array formula)
+            const isTransposeFormula = f && /TRANSPOSE\s*\(/i.test(f);
+            
+            // For TRANSPOSE formulas, check if this is a duplicate
+            if (isTransposeFormula) {
+                // Extract the formula content to use as a key
+                const formulaKey = f.replace(/\s+/g, '').toUpperCase();
+                
+                if (transposeTracker.has(formulaKey)) {
+                    // This is a duplicate TRANSPOSE formula - it should be a spill cell
+                    const firstCell = transposeTracker.get(formulaKey)!;
+                    
+                    // Return cell with just the value, no formula (it's a spill cell)
+                    const cell: ICellData = {
+                        s: handleStyle(row, borderConf),
+                        t: cellType,
+                        v: val, // Keep the calculated value
+                    };
+                    
+                    // Handle hyperlinks and other properties as normal
+                    if (hyperlinkInfo) {
+                        const hyperlinkDoc = this.handleHyperlinkDocument(row, hyperlinkInfo);
+                        if (hyperlinkDoc) {
+                            cell.p = hyperlinkDoc;
+                        }
+                    } else {
+                        const pVal = this.handleDocument(row, config);
+                        if (pVal) cell.p = pVal;
+                    }
+                    
+                    return cell;
+                } else {
+                    // First occurrence of this TRANSPOSE formula
+                    transposeTracker.set(formulaKey, {firstRow: row.r, firstCol: row.c});
+                }
+            }
+            
+            if ((v.ft === 'array' && v.ref && f) || isTransposeFormula) {
+                // Generate a unique ID for this array formula
+                formulaId = generateRandomId(6);
+                
+                // For TRANSPOSE, extract the range from the formula if no ref provided
+                let arrayFormulaRange = null;
+                if (v.ref) {
+                    arrayFormulaRange = this.parseRange(v.ref);
+                } else if (isTransposeFormula) {
+                    // For TRANSPOSE without ref, we need to determine the output range
+                    // This is a single cell that will spill to adjacent cells
+                    // We'll mark it as a 1x1 range and let Excel handle the spill
+                    arrayFormulaRange = {
+                        startRow: row.r,
+                        endRow: row.r,
+                        startCol: row.c,
+                        endCol: row.c
+                    };
+                }
+                
+                if (arrayFormulaRange) {
+                    // Store array formula information for later processing
+                    this.arrayFormulas.push({
+                        formula: f,
+                        range: arrayFormulaRange,
+                        masterRow: row.r,
+                        masterCol: row.c,
+                        formulaId: formulaId
+                    });
+                }
+            }
+            
             const cell: ICellData = {
                 // custom: v., // User stored custom fields
                 f,
                 // p: , // The unique key, a random string, is used for the plug-in to associate the cell. When the cell information changes, the plug-in does not need to change the data, reducing the pressure on the back-end interface id?: string.
                 s: handleStyle(row, borderConf),
-                // si: f, // Id of the formula.
+                si: formulaId, // Set formula ID for array formulas
                 t: cellType,
-                v: val,
+                v: val, // Always preserve the calculated value
             };
-            const pVal = this.handleDocument(row, config);
-            if (pVal) cell.p = pVal;
+            // Handle hyperlinks first - convert to rich text format
+            if (hyperlinkInfo) {
+                const hyperlinkDoc = this.handleHyperlinkDocument(row, hyperlinkInfo);
+                if (hyperlinkDoc) {
+                    cell.p = hyperlinkDoc;
+                }
+            } else {
+                const pVal = this.handleDocument(row, config);
+                if (pVal) cell.p = pVal;
 
-            const pValImg = this.handleCellImage(row,config);
-            if (pValImg) {
-                cell.p = pValImg;
-                cell.f = undefined;
-                cell.v = undefined;
+                const pValImg = this.handleCellImage(row, config);
+                if (pValImg) {
+                    cell.p = pValImg;
+                    cell.f = undefined;
+                    cell.v = undefined;
+                }
             }
             return removeEmptyAttr(cell);
         };
@@ -165,7 +262,7 @@ export class UniverSheet extends UniverSheetBase {
             return pre;
         }, []);
         const cell: IObjectMatrixPrimitiveType<ICellData> = {};
-        // console.log(rowData, celldata, colCount)
+        // debug.log(rowData, celldata, colCount)
         rowData.forEach((row: IluckySheetCelldata[], rowIndex: number) => {
             for (let index = 0; index < colCount + 1; index++) {
                 const element = row.find((d) => d.c === index) || {
@@ -177,6 +274,10 @@ export class UniverSheet extends UniverSheetBase {
                 cell[element.r][element.c] = handleCell(element);
             }
         });
+        
+        // Apply array formulas to all cells in their ranges
+        this.applyArrayFormulas(cell);
+        
         return {
             cellData: cell,
             rowCount: rowData.length,
@@ -281,6 +382,75 @@ export class UniverSheet extends UniverSheetBase {
             };
         }
         return pVlaue;
+    };
+
+    /**
+     * Create rich text document for hyperlink cells
+     * @param row Cell data
+     * @param hyperlinkInfo Hyperlink information 
+     */
+    private handleHyperlinkDocument = (row: IluckySheetCelldata, hyperlinkInfo: HyperLink): Nullable<IDocumentData> => {
+        const { v } = row;
+        let cellText = '';
+        
+        // Get display text - prefer actual cell value over hyperlink address
+        if (typeof v === 'string') {
+            cellText = v;
+        } else if (v && typeof v === 'object' && v.v) {
+            cellText = String(v.v);
+        } else {
+            // Fallback to hyperlink address if no display text
+            cellText = typeof hyperlinkInfo.payload === 'string' 
+                ? hyperlinkInfo.payload 
+                : (hyperlinkInfo.payload?.range || 'Link');
+        }
+
+        if (!cellText) return null;
+
+        const linkText = cellText + '\r\n';
+        const linkId = generateRandomId(6);
+        
+        return {
+            id: generateRandomId(6),
+            documentStyle: {
+                documentFlavor: 0,
+                pageSize: { width: 0, height: 0 },
+                renderConfig: {},
+                textStyle: {},
+            },
+            body: {
+                dataStream: linkText,
+                paragraphs: [{
+                    startIndex: linkText.length - 2, // Before \r\n
+                }],
+                sectionBreaks: [{
+                    startIndex: linkText.length - 1, // Before \n
+                }],
+                textRuns: [{
+                    st: 0,
+                    ed: cellText.length,
+                    ts: {
+                        cl: {
+                            rgb: 'rgb(0, 0, 255)' // Blue color for hyperlinks
+                        },
+                        ul: {
+                            s: 1 // Underline
+                        }
+                    }
+                }],
+                customRanges: [{
+                    startIndex: 0,
+                    endIndex: cellText.length,
+                    rangeId: linkId,
+                    rangeType: 2, // HYPERLINK_RANGE
+                    properties: {
+                        url: typeof hyperlinkInfo.payload === 'string' ? hyperlinkInfo.payload : undefined,
+                        payload: typeof hyperlinkInfo.payload === 'object' ? hyperlinkInfo.payload : undefined
+                    }
+                }]
+            },
+            drawings: {},
+        };
     };
 
     private handleCellImage = (row: IluckySheetCelldata, config: IluckySheetConfig) => {
@@ -418,5 +588,87 @@ export class UniverSheet extends UniverSheetBase {
             startColumn: freeze.vertical,
             startRow: freeze.horizen,
         };
+    };
+
+    /**
+     * Apply array formulas using Univer's shared formula system (si)
+     */
+    private applyArrayFormulas = (cellData: IObjectMatrixPrimitiveType<ICellData>) => {
+        for (const arrayFormula of this.arrayFormulas) {
+            const { formula, range, masterRow, masterCol, formulaId } = arrayFormula;
+            
+            // Apply the shared formula ID to all cells in the range
+            for (let r = range.startRow; r <= range.endRow; r++) {
+                for (let c = range.startCol; c <= range.endCol; c++) {
+                    if (!cellData[r]) cellData[r] = {};
+                    if (!cellData[r][c]) cellData[r][c] = {};
+                    
+                    if (r === masterRow && c === masterCol) {
+                        // Master cell: has both formula and shared ID
+                        cellData[r][c].f = formula;
+                        cellData[r][c].si = formulaId;
+                    } else {
+                        // Dependent cells: only have shared ID, Univer will calculate offset formula
+                        cellData[r][c].si = formulaId;
+                        // Remove any existing formula to let Univer handle it
+                        delete cellData[r][c].f;
+                        // Keep existing values if they exist, otherwise Univer will calculate
+                        if (!cellData[r][c].v) {
+                            cellData[r][c].v = null;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    /**
+     * Parse Excel range string like "A1:C3" to row/column indices
+     */
+    private parseRange = (rangeStr: string): {startRow: number, endRow: number, startCol: number, endCol: number} | null => {
+        try {
+            const parts = rangeStr.split(':');
+            if (parts.length !== 2) return null;
+            
+            const startCell = this.cellRefToIndices(parts[0]);
+            const endCell = this.cellRefToIndices(parts[1]);
+            
+            if (!startCell || !endCell) return null;
+            
+            return {
+                startRow: startCell.row,
+                endRow: endCell.row,
+                startCol: startCell.col,
+                endCol: endCell.col
+            };
+        } catch {
+            return null;
+        }
+    };
+
+    /**
+     * Convert cell reference like "A1" to row/column indices
+     */
+    private cellRefToIndices = (cellRef: string): {row: number, col: number} | null => {
+        try {
+            const match = cellRef.match(/^([A-Z]+)(\d+)$/);
+            if (!match) return null;
+            
+            const colStr = match[1];
+            const rowStr = match[2];
+            
+            // Convert column letters to number (A=0, B=1, etc.)
+            let col = 0;
+            for (let i = 0; i < colStr.length; i++) {
+                col = col * 26 + (colStr.charCodeAt(i) - 64);
+            }
+            col -= 1; // Convert to 0-based
+            
+            const row = parseInt(rowStr) - 1; // Convert to 0-based
+            
+            return { row, col };
+        } catch {
+            return null;
+        }
     };
 }

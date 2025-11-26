@@ -1,4 +1,5 @@
 ﻿import { IluckyImageBorder,IluckyImageCrop,IluckyImageDefault,IluckyImages,IluckySheetCelldata,IluckySheetCelldataValue,IMapluckySheetborderInfoCellForImp,IluckySheetborderInfoCellValue,IluckySheetborderInfoCellValueStyle,IFormulaSI,IluckySheetRowAndColumnLen,IluckySheetRowAndColumnHidden,IluckySheetSelection,IcellOtherInfo,IformulaList,IformulaListItem, IluckysheetHyperlink, IluckysheetHyperlinkType, IluckysheetDataVerification} from "./ILuck";
+import { debug } from '../utils/debug';
 import {LuckySheetCelldata} from "./LuckyCell";
 import { IattributeList } from "../ICommon";
 import {getXmlAttibute, getColumnWidthPixel, fromulaRef,getRowHeightPixel,getcellrange,generateRandomIndex,getPxByEMUs, getMultiSequenceToNum, getTransR1C1ToSequence, getPeelOffX14, getMultiFormulaValue} from "../common/method";
@@ -49,6 +50,20 @@ export class LuckySheet extends LuckySheetBase {
         this.order = sheetOrder.toString();
         this.config = new LuckyConfig();
         this.celldata = [];
+        
+        // Handle empty sheets (when sheetFile is null)
+        if(!this.sheetFile) {
+            // Set defaults for empty sheet
+            this.showGridLines = "1";
+            this.status = "0";
+            this.zoomRatio = 1;
+            this.defaultColWidth = 73;
+            this.defaultRowHeight = 19;
+            this.row = 84;
+            this.column = 60;
+            return;
+        }
+        
         this.mergeCells = this.readXml.getElementsByTagName("mergeCells/mergeCell", this.sheetFile);
         let clrScheme = this.styles["clrScheme"] as Element[];
         let sheetView = this.readXml.getElementsByTagName("sheetViews/sheetView", this.sheetFile);
@@ -124,6 +139,7 @@ export class LuckySheet extends LuckySheetBase {
         }
         
 
+        // Process shared formulas
         if(this.formulaRefList!=null){
             for(let key in this.formulaRefList){
                 let funclist = this.formulaRefList[key];
@@ -145,7 +161,6 @@ export class LuckySheet extends LuckySheetBase {
                     let func = formulaTxt;
                     let offsetRow = r - mainR, offsetCol = c - mainC;
 
-                    
                     if(offsetRow > 0){
                         func = "=" + fromulaRef.functionCopy(func, "down", offsetRow);
                     }
@@ -159,8 +174,6 @@ export class LuckySheet extends LuckySheetBase {
                     else if(offsetCol < 0){
                         func = "=" + fromulaRef.functionCopy(func, "left", Math.abs(offsetCol));
                     }
-
-                    // console.log(offsetRow, offsetCol, func);
 
                     (cellValue.v as IluckySheetCelldataValue ).f = func;
                     
@@ -214,16 +227,16 @@ export class LuckySheet extends LuckySheetBase {
             })?.flat().filter(Boolean).concat(extLstRule?.filter((d: any) => conditionList.findIndex(condition => condition.attributeList.sqref === d.parentAttribute.sqref) === -1)) || [];
             
             this.conditionalFormatting = ruleList.map((d: any ) => new LuckyCondition(d, this.readXml, this.styles));
-            // console.log(ruleList, allFileOption, this.conditionalFormatting)
+            // debug.log(ruleList, allFileOption, this.conditionalFormatting)
         }
-        // console.log(allFileOption)
+        // debug.log(allFileOption)
         const filter = new LuckFilter(this.readXml, this.sheetFile)
         if (filter.ref) this.filter = filter;
       
         // dataVerification config
         this.dataVerification = this.generateConfigDataValidations();
         this.dataVerificationList = this.generateConfigDataValidationsList();
-        // console.log('dataVerificationList ---->', this.dataVerificationList)
+        // debug.log('dataVerificationList ---->', this.dataVerificationList)
 
         // hyperlink config
         this.hyperlink = this.generateConfigHyperlinks();
@@ -372,23 +385,28 @@ export class LuckySheet extends LuckySheetBase {
         return {}
     }
     private getGraphic = (twoCellAnchor: Element, drawingRelsFile: string) => {
-        const xdr_graphicFrames = twoCellAnchor.getInnerElements("xdr:graphicFrame");
-        if (xdr_graphicFrames.length) {
-            const xdr_graphicFrame = xdr_graphicFrames[0];
-            const chartImageGroup = new ChartImageGroup({
-                graphicFrame: xdr_graphicFrame,
-                readXml: this.readXml,
-                drawingRelsFile,
-                styles: this.styles,
-            })
-            const imageObject = chartImageGroup.image;
-            if (chartImageGroup.chart) {
-                if(this.charts==null){
-                    this.charts = [];
+        try {
+            const xdr_graphicFrames = twoCellAnchor.getInnerElements("xdr:graphicFrame");
+            if (xdr_graphicFrames.length) {
+                const xdr_graphicFrame = xdr_graphicFrames[0];
+                const chartImageGroup = new ChartImageGroup({
+                    graphicFrame: xdr_graphicFrame,
+                    readXml: this.readXml,
+                    drawingRelsFile,
+                    styles: this.styles,
+                })
+                const imageObject = chartImageGroup.image;
+                if (chartImageGroup.chart) {
+                    if(this.charts==null){
+                        this.charts = [];
+                    }
+                    this.charts.push(chartImageGroup.chart)
                 }
-                this.charts.push(chartImageGroup.chart)
+                return imageObject;
             }
-            return imageObject;
+        } catch (error) {
+            debug.warn('Failed to process chart/graphic, skipping:', error);
+            // Return empty object to continue processing
         }
         return {};
     }
@@ -472,6 +490,7 @@ export class LuckySheet extends LuckySheetBase {
     * @desc This will convert cols/col to luckysheet config of column'width
     */
     private generateConfigRowLenAndHiddenAddCell():IcellOtherInfo{
+        // Remove verbose logging
         let rows = this.readXml.getElementsByTagName("sheetData/row", this.sheetFile);
         let cellOtherInfo:IcellOtherInfo = {};
         let formulaList:IformulaList = {};
@@ -593,6 +612,7 @@ export class LuckySheet extends LuckySheetBase {
                     //     }
                     // }
                     if(cellValue._formulaType=="shared"){
+                        // Remove verbose logging
                         if(this.formulaRefList==null){
                             this.formulaRefList = {};
                         }
@@ -600,10 +620,18 @@ export class LuckySheet extends LuckySheetBase {
                         if(this.formulaRefList[cellValue._formulaSi]==null){
                             this.formulaRefList[cellValue._formulaSi] = {}
                         }
+                        
+                        const currentCellRef = String.fromCharCode(65 + cellValue.c) + (cellValue.r + 1);
+                        const formula = cellValue.v ? (cellValue.v as IluckySheetCelldataValue).f : 'unknown';
+                        debug.log(`🔧 [SharedFormula] Collecting cell ${currentCellRef} with SI=${cellValue._formulaSi}, formula="${formula}", hasRef=${!!cellValue._fomulaRef}`);
 
                         let fv;
                         if(cellValue.v!=null){
                             fv = (cellValue.v as IluckySheetCelldataValue).f;
+                            // Fix =+ prefix in shared formulas before expansion
+                            if(fv && fv.startsWith('=+')) {
+                                fv = '=' + fv.substring(2);
+                            }
                         }
 
                         let refValue = {
@@ -621,7 +649,7 @@ export class LuckySheet extends LuckySheetBase {
                             this.formulaRefList[cellValue._formulaSi][cellValue.r+"_"+cellValue.c] = refValue;
                         }
 
-                        // console.log(refValue, this.formulaRefList);
+                        // debug.log(refValue, this.formulaRefList);
                     }
 
                     //There may be formulas that do not appear in calcChain
@@ -808,8 +836,8 @@ export class LuckySheet extends LuckySheetBase {
           }
         }
 
-        // match R1C1
-        const addressReg = new RegExp(/^.*!R([\d$])+C([\d$])*$/g)
+        // match R1C1 - use a more efficient pattern
+        const addressReg = /^[^!]*!R([\d$])+C([\d$])*$/
         if (addressReg.test(_address)) {
           _address = getTransR1C1ToSequence(_address);
         }

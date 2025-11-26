@@ -1,13 +1,12 @@
 import {
-    DrawingTypeEnum,
     IStyleData,
     IWorkbookData,
     IWorksheetData,
-    LocaleType,
     Nullable,
-    PresetGeometryType,
 } from '@univerjs/core';
 import { IResources } from '@univerjs/core/lib/types/services/resource-manager/type';
+import { DrawingTypeEnum, PresetGeometryType, LocaleType } from '../common/univerEnums';
+import { debug } from '../utils/debug';
 import { HyperLink, UniverSheet } from './UniverSheet';
 // import { ISheetDrawing, SheetDrawingAnchorType } from '@univerjs/sheets-drawing';
 import { handleStyle } from './utils';
@@ -22,36 +21,67 @@ interface Sheets {
 interface LuckySheetObj {
     [sheetId: string]: Partial<IluckySheet>;
 }
+
 export class UniverWorkBook implements IWorkbookData {
     id!: string;
     rev?: number | undefined;
     name!: string;
     appVersion!: string;
-    locale!: LocaleType;
+    locale!: any; // Changed from LocaleType to any to avoid import issues
     styles!: Record<string, Nullable<IStyleData>>;
     sheetOrder!: string[];
     sheets!: Sheets;
     resources?: IResources | undefined = [];
     constructor(file: ILuckyFile) {
-        const { info, sheets, workbook } = file;
+        debug.log('🔍 [UniverWorkBook] Constructor called with file:', {
+            hasInfo: !!file.info,
+            hasSheets: !!file.sheets,
+            hasData: !!(file as any).data,
+            hasWorkbook: !!file.workbook,
+            fileKeys: Object.keys(file)
+        });
+        
+        // Handle both 'sheets' and 'data' properties for backwards compatibility
+        const sheets = file.sheets || (file as any).data || [];
+        const { info, workbook } = file;
+        
+        debug.log('🔍 [UniverWorkBook] Sheets extracted:', {
+            sheetsCount: sheets.length,
+            sheetNames: sheets.map((s: IluckySheet) => s.name)
+        });
+        
         this.id = generateRandomId(6);
         this.name = info.name;
         this.appVersion = info.appversion;
-        this.locale = LocaleType.ZH_CN;
+        this.locale = LocaleType.ZH_CN; // Using local enum
 
         const workSheets: Sheets = {},
             order: string[] = [],
             sheetsObj: LuckySheetObj = {};
+        debug.log('🔍 [UniverWorkBook] Processing sheets before sort:', sheets.map((s: IluckySheet) => ({
+            name: s.name, 
+            order: s.order,
+            hasCellData: !!(s.celldata && s.celldata.length > 0),
+            cellCount: s.celldata ? s.celldata.length : 0
+        })));
+        
         sheets
-            .sort((a, b) => Number(a.order) - Number(b.order))
-            .forEach((d) => {
+            .sort((a: IluckySheet, b: IluckySheet) => Number(a.order) - Number(b.order))
+            .forEach((d: IluckySheet) => {
+                debug.log('🔍 [DEBUG] Creating UniverSheet for:', {
+                    name: d.name,
+                    order: d.order,
+                    hasCellData: !!(d.celldata && d.celldata.length > 0),
+                    cellCount: d.celldata ? d.celldata.length : 0
+                });
                 const sheet = new UniverSheet(d);
                 workSheets[sheet.id] = sheet.mode;
                 sheetsObj[sheet.id] = d;
                 order.push(sheet.id);
+                debug.log('✅ [DEBUG] Sheet created with ID:', sheet.id, 'name:', sheet.name);
             });
 
-        // console.log(workSheets,sheets)
+        // debug.log(workSheets,sheets)
         this.handleHyperLinks(workSheets);
         this.handleImage(workSheets, sheets);
         this.handleChart(workSheets, sheets);
@@ -60,6 +90,9 @@ export class UniverWorkBook implements IWorkbookData {
         this.handleVerification(sheetsObj);
         this.handleFilter(sheetsObj);
         this.sheetOrder = order;
+
+        // Collect all styles from sheets into registry
+        this.collectStyles(workSheets);
 
         this.sheets = workSheets;
     }
@@ -103,7 +136,7 @@ export class UniverWorkBook implements IWorkbookData {
                 };
             });
         }
-        // console.log(workSheets, hyperLinks)
+        // debug.log(workSheets, hyperLinks)
         this.resources?.push({
             name: 'SHEET_HYPER_LINK_PLUGIN',
             data: JSON.stringify(hyperLinks),
@@ -182,7 +215,7 @@ export class UniverWorkBook implements IWorkbookData {
                         drawingType: DrawingTypeEnum.DRAWING_IMAGE,
                         imageSourceType: ImageSourceType.BASE64,
                         source: image.src,
-                        prstGeom: 'rect' as Nullable<PresetGeometryType>,
+                        prstGeom: PresetGeometryType.Rect as Nullable<PresetGeometryType>,
                         anchorType: '1',
                     }
                 }
@@ -228,7 +261,7 @@ export class UniverWorkBook implements IWorkbookData {
                 })
             });
         })
-        // console.log('chartList', chartList)
+        // debug.log('chartList', chartList)
         this.resources?.push({
             name: 'SHEET_CHART_PLUGIN',
             data: JSON.stringify(chartList),
@@ -280,4 +313,56 @@ export class UniverWorkBook implements IWorkbookData {
             data: JSON.stringify(obj),
         });
     };
+
+    private collectStyles(workSheets: Sheets): void {
+        const styleRegistry: Record<string, IStyleData> = {};
+        let styleIdCounter = 0;
+        
+        debug.log('🎨 [UniverWorkBook] Starting style collection from sheets');
+        
+        // Iterate through all sheets
+        for (const sheetId in workSheets) {
+            const sheet = workSheets[sheetId];
+            if (!sheet.cellData) continue;
+            
+            let sheetStyleCount = 0;
+            
+            // Iterate through all cells
+            Object.values(sheet.cellData).forEach((rowData: any) => {
+                Object.values(rowData).forEach((cell: any) => {
+                    if (cell.s && typeof cell.s === 'object') {
+                        // This cell has an inline style object
+                        const styleKey = JSON.stringify(cell.s);
+                        
+                        // Check if we've seen this style before
+                        let styleId = Object.keys(styleRegistry).find(
+                            id => JSON.stringify(styleRegistry[id]) === styleKey
+                        );
+                        
+                        if (!styleId) {
+                            // New style, add to registry
+                            styleId = `style_${styleIdCounter++}`;
+                            styleRegistry[styleId] = cell.s;
+                            sheetStyleCount++;
+                        }
+                        
+                        // Replace inline style with style ID reference
+                        cell.s = styleId;
+                    }
+                });
+            });
+            
+            if (sheetStyleCount > 0) {
+                debug.log(`  Sheet ${sheet.name || sheetId}: ${sheetStyleCount} unique styles`);
+            }
+        }
+        
+        this.styles = styleRegistry;
+        
+        const borderCount = Object.values(styleRegistry).filter((s: any) => s.bd).length;
+        debug.log('📊 [UniverWorkBook] Style collection complete:', {
+            totalStyles: Object.keys(styleRegistry).length,
+            stylesWithBorders: borderCount
+        });
+    }
 }
